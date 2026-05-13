@@ -1,5 +1,5 @@
 # Package
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "nimagent maintainers"
 description   = "A lightweight Nim SDK for building small, inspectable AI agents."
 license       = "Apache-2.0"
