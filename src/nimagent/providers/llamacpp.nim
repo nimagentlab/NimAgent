@@ -4,7 +4,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
 import ../utils/http_compat
-import std/[strformat]
+import std/[strformat, strutils]
 import ./base
 import ../messages
 
@@ -20,7 +20,8 @@ proc newLlamaCppProvider*(baseUrl: string = "http://localhost:8080", model: stri
 
 method generate*(provider: LlamaCppProvider, messages: seq[Message], toolsSchema: JsonNode = nil, forceJson: bool = false): Future[Message] {.async.} =
   let client = newHttpCompatClient(newJsonHeaders())
-  
+  defer: client.close()
+
   # Building messages (llama-server follows OpenAI API)
   var apiMessages = newJArray()
   for msg in messages:
@@ -30,10 +31,18 @@ method generate*(provider: LlamaCppProvider, messages: seq[Message], toolsSchema
       of Assistant: "assistant"
       of Tool: "tool"
       
-    var msgJson = %*{
-      "role": roleStr,
-      "content": if msg.content.len > 0: %msg.content else: newJNull()
-    }
+    var msgJson = newJObject()
+    msgJson["role"] = %roleStr
+    if msg.images.len > 0:
+      var contentArr = newJArray()
+      contentArr.add(%*{"type": "text", "text": msg.content})
+      for img in msg.images:
+        let imgUrl = if img.startsWith("http") or img.startsWith("data:image"): img 
+                     else: "data:image/jpeg;base64," & img
+        contentArr.add(%*{"type": "image_url", "image_url": {"url": imgUrl}})
+      msgJson["content"] = contentArr
+    else:
+      msgJson["content"] = if msg.content.len > 0: %msg.content else: newJNull()
     
     if msg.role == Tool:
       msgJson["tool_call_id"] = %msg.toolCallId
@@ -90,11 +99,12 @@ method generate*(provider: LlamaCppProvider, messages: seq[Message], toolsSchema
       return outMsg
     else:
       raise newException(ValueError, fmt"Llama.cpp server error: HTTP {response.code} - {response.body}")
-  finally:
-    client.close()
+  except Exception as e:
+    raise e
 
 method getEmbedding*(provider: LlamaCppProvider, text: string): Future[seq[float]] {.async.} =
   let client = newHttpCompatClient(newJsonHeaders())
+  defer: client.close()
 
   let body = %*{
     "model": provider.model,
@@ -117,5 +127,51 @@ method getEmbedding*(provider: LlamaCppProvider, text: string): Future[seq[float
       return embedding
     else:
       raise newException(ValueError, fmt"Llama.cpp Embedding API Error: HTTP {response.code} - {response.body}")
-  finally:
-    client.close()
+  except Exception as e:
+    raise e
+
+# =============================================================================
+# Polymorphic Introspection for Llama.cpp
+# =============================================================================
+
+method isAlive*(provider: LlamaCppProvider): Future[bool] {.async.} =
+  let client = newHttpCompatClient()
+  defer: client.close()
+  try:
+    let response = await client.get(provider.baseUrl & "/health")
+    return response.is2xx
+  except Exception:
+    return false
+
+method getAvailableModels*(provider: LlamaCppProvider): Future[seq[string]] {.async.} =
+  let client = newHttpCompatClient()
+  defer: client.close()
+  try:
+    let response = await client.get(provider.baseUrl & "/v1/models")
+    if not response.is2xx: return @[]
+    let respJson = parseJson(response.body)
+    var models: seq[string] = @[]
+    for m in respJson["data"]:
+      models.add(m["id"].getStr())
+    return models
+  except Exception:
+    return @[]
+
+method getMaxContextTokens*(provider: LlamaCppProvider): Future[int] {.async.} =
+  let client = newHttpCompatClient()
+  defer: client.close()
+  try:
+    # Llama.cpp exposes configuration at /props
+    let response = await client.get(provider.baseUrl & "/props")
+    if not response.is2xx: return 8192
+    let respJson = parseJson(response.body)
+    if respJson.hasKey("default_generation_settings") and respJson["default_generation_settings"].hasKey("n_ctx"):
+      return respJson["default_generation_settings"]["n_ctx"].getInt()
+    return 8192
+  except Exception:
+    return 8192
+
+method supportsVision*(provider: LlamaCppProvider): bool =
+  # Llama.cpp requires a specific mmproj file to support vision, 
+  # returning false safely by default unless explicitly configured.
+  return false

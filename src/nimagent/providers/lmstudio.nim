@@ -3,7 +3,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
 import ../utils/http_compat
-import std/[strformat]
+import std/[strformat, strutils]
 
 import ./base
 import ../messages
@@ -28,10 +28,18 @@ method generate*(provider: LMStudioProvider, messages: seq[Message], toolsSchema
       of Assistant: "assistant"
       of Tool: "tool"
 
-    var msgJson = %*{
-      "role": roleStr,
-      "content": if msg.content.len > 0: %msg.content else: newJNull()
-    }
+    var msgJson = newJObject()
+    msgJson["role"] = %roleStr
+    if msg.images.len > 0:
+      var contentArr = newJArray()
+      contentArr.add(%*{"type": "text", "text": msg.content})
+      for img in msg.images:
+        let imgUrl = if img.startsWith("http") or img.startsWith("data:image"): img 
+                     else: "data:image/jpeg;base64," & img
+        contentArr.add(%*{"type": "image_url", "image_url": {"url": imgUrl}})
+      msgJson["content"] = contentArr
+    else:
+      msgJson["content"] = if msg.content.len > 0: %msg.content else: newJNull()
 
     if msg.role == Tool: msgJson["tool_call_id"] = %msg.toolCallId
     if msg.toolCalls.len > 0:

@@ -40,7 +40,7 @@ when defined(useChronos):
 
   proc close*(client: HttpCompatClient) =
     ## Closes the client (noop for Chronos, GC handles it)
-    discard
+    return
 
   proc toChronosHeaders(headers: seq[(string, string)]): seq[HttpHeaderTuple] =
     ## Converts seq[(string, string)] to seq[HttpHeaderTuple] for Chronos
@@ -49,7 +49,7 @@ when defined(useChronos):
       result.add((name, value))
 
   proc get*(client: HttpCompatClient, url: string, headers: seq[(string, string)] = @[]): Future[HttpCompatResponse] {.async.} =
-    ## Requête GET
+    ## GET request
     var allHeaders = client.defaultHeaders
     for h in headers:
       allHeaders.add(h)
@@ -91,9 +91,8 @@ else:
       defaultHeaders: HttpHeaders
 
     HttpCompatResponse* = object
-      code*: HttpCode
+      code*: int
       body*: string
-      headers*: HttpHeaders
       is2xx*: bool
 
   proc newHttpCompatClient*(defaultHeaders: seq[(string, string)] = @[]): HttpCompatClient =
@@ -126,9 +125,8 @@ else:
     let response = await client.client.get(url)
     let responseBody = await response.body
     return HttpCompatResponse(
-      code: response.code,
+      code: int(response.code),
       body: responseBody,
-      headers: response.headers,
       is2xx: response.code.is2xx
     )
 
@@ -142,9 +140,8 @@ else:
     let response = await client.client.post(url, body)
     let responseBody = await response.body
     return HttpCompatResponse(
-      code: response.code,
+      code: int(response.code),
       body: responseBody,
-      headers: response.headers,
       is2xx: response.code.is2xx
     )
 

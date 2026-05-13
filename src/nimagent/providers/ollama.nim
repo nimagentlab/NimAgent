@@ -1,7 +1,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
 import ../utils/http_compat
-import std/[strutils, options, net]
+import std/[strutils, net]
 import ../messages
 import ./base
 
@@ -37,7 +37,23 @@ method generate*(provider: OllamaProvider, messages: seq[Message],
   # Build messages array
   var msgsJson = newJArray()
   for msg in messages:
-    var m = %*{"role": $msg.role, "content": msg.content}
+    var m = newJObject()
+    m["role"] = %($msg.role).toLowerAscii()
+    
+    # Support Multimodal (Vision)
+    if msg.images.len > 0:
+      var contentArr = newJArray()
+      contentArr.add(%*{"type": "text", "text": msg.content})
+      for img in msg.images:
+        let imgUrl = if img.startsWith("http") or img.startsWith("data:image"): img 
+                     else: "data:image/jpeg;base64," & img
+        contentArr.add(%*{
+          "type": "image_url",
+          "image_url": {"url": imgUrl}
+        })
+      m["content"] = contentArr
+    else:
+      m["content"] = %msg.content
     if msg.toolCallId != "":
       m["tool_call_id"] = %msg.toolCallId
     if msg.toolCalls.len > 0:
@@ -132,6 +148,15 @@ method getEmbedding*(provider: OllamaProvider, text: string): Future[seq[
     client.close()
 
 # Constants for cloud access (to be moved to config)
+method setBaseUrl*(provider: OllamaProvider, url: string) =
+  provider.baseUrl = url.strip(chars = {'/'})
+
+method setApiKey*(provider: OllamaProvider, key: string) =
+  provider.apiKey = key
+
+method setModel*(provider: OllamaProvider, model: string) =
+  provider.model = model
+
 const
   OLLAMA_CLOUD_URL* = "https://ollama.com/api"
   OLLAMA_CLOUD_KEY* = ""

@@ -2,7 +2,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
 import ../utils/http_compat
-import std/[strformat]
+import std/[strformat, strutils]
 import ./base
 import ../messages
 
@@ -24,7 +24,18 @@ method generate*(provider: GeminiProvider, messages: seq[Message], toolsSchema: 
     if msg.role == System:
       systemInstruction = %*{"role": "user", "parts": [{"text": msg.content}]}
     elif msg.role == User:
-      contents.add(%*{"role": "user", "parts": [{"text": msg.content}]})
+      var parts = newJArray()
+      parts.add(%*{"text": msg.content})
+      for img in msg.images:
+        var mimeType = "image/jpeg"
+        var b64 = img
+        if img.startsWith("data:"):
+          let sParts = img.split(";")
+          if sParts.len >= 2:
+            mimeType = sParts[0].replace("data:", "")
+            b64 = sParts[1].replace("base64,", "")
+        parts.add(%*{"inlineData": {"mimeType": mimeType, "data": b64}})
+      contents.add(%*{"role": "user", "parts": parts})
     elif msg.role == Assistant:
       var parts = newJArray()
       if msg.content.len > 0:

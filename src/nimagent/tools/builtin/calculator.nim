@@ -57,7 +57,8 @@ llmTool "Perform basic arithmetic calculations safely. Supports addition (+), su
               return "Error: Division by zero"
             result = result / b
           of '^': result = result.pow(b)
-          else: discard
+          else:
+            return "Error: Unsupported operator '" & op & "'"
 
       return $result
     except CatchableError as e:

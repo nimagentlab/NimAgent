@@ -3,18 +3,28 @@ import ../utils/json_compat
 import ../utils/http_compat
 import ./base
 import ../messages
-import std/strformat
+import std/[strformat, strutils]
 
 type
   OpenAIProvider* = ref object of LLMProvider
     apiKey*: string
     model*: string
+    baseUrl*: string
+    client: HttpCompatClient
 
-proc newOpenAIProvider*(apiKey: string, model: string = "gpt-3.5-turbo"): OpenAIProvider =
-  OpenAIProvider(apiKey: apiKey, model: model)
+proc newOpenAIProvider*(apiKey: string, model: string = "gpt-3.5-turbo",
+  baseUrl: string = "https://api.openai.com/v1"): OpenAIProvider =
+  return OpenAIProvider(
+    apiKey: apiKey,
+    model: model,
+    baseUrl: baseUrl,
+    client: newHttpCompatClient()
+  )
 
-method generate*(provider: OpenAIProvider, messages: seq[Message], toolsSchema: JsonNode = nil, forceJson: bool = false): Future[Message] {.async.} =
-  let client = newHttpCompatClient()
+method generate*(provider: OpenAIProvider, messages: seq[Message],
+    toolsSchema: JsonNode = nil, forceJson: bool = false): Future[
+    Message] {.async.} =
+  let client = provider.client
 
   # Configuration des headers
   let headers = @[
@@ -31,10 +41,22 @@ method generate*(provider: OpenAIProvider, messages: seq[Message], toolsSchema: 
       of Assistant: "assistant"
       of Tool: "tool"
 
-    var msgJson = %*{
-      "role": roleStr,
-      "content": if msg.content.len > 0: %msg.content else: newJNull()
-    }
+    var msgJson = newJObject()
+    msgJson["role"] = %roleStr
+    
+    if msg.images.len > 0:
+      var contentArr = newJArray()
+      contentArr.add(%*{"type": "text", "text": msg.content})
+      for img in msg.images:
+        let imgUrl = if img.startsWith("http") or img.startsWith("data:image"): img 
+                     else: "data:image/jpeg;base64," & img
+        contentArr.add(%*{
+          "type": "image_url",
+          "image_url": {"url": imgUrl}
+        })
+      msgJson["content"] = contentArr
+    else:
+      msgJson["content"] = if msg.content.len > 0: %msg.content else: newJNull()
 
     if msg.role == Tool:
       msgJson["tool_call_id"] = %msg.toolCallId
@@ -60,13 +82,13 @@ method generate*(provider: OpenAIProvider, messages: seq[Message], toolsSchema: 
   }
 
   if forceJson:
-    body["response_format"] = %*{ "type": "json_object" }
+    body["response_format"] = %*{"type": "json_object"}
 
   if not toolsSchema.isNil and toolsSchema.len > 0:
     body["tools"] = toolsSchema
     body["tool_choice"] = %"auto"
 
-  let apiUrl = "https://api.openai.com/v1/chat/completions"
+  let apiUrl = provider.baseUrl & "/chat/completions"
 
   try:
     let response = await client.post(apiUrl, $body, headers)
@@ -91,11 +113,12 @@ method generate*(provider: OpenAIProvider, messages: seq[Message], toolsSchema: 
       return outMsg
     else:
       raise newException(ValueError, fmt"API Error: HTTP {response.code} - {responseBody}")
-  finally:
-    client.close()
+  except Exception as e:
+    raise e
 
-method getEmbedding*(provider: OpenAIProvider, text: string): Future[seq[float]] {.async.} =
-  let client = newHttpCompatClient()
+method getEmbedding*(provider: OpenAIProvider, text: string): Future[seq[
+    float]] {.async.} =
+  let client = provider.client
 
   let headers = @[
     ("Content-Type", "application/json"),
@@ -108,7 +131,7 @@ method getEmbedding*(provider: OpenAIProvider, text: string): Future[seq[float]]
     "input": text
   }
 
-  let apiUrl = "https://api.openai.com/v1/embeddings"
+  let apiUrl = provider.baseUrl & "/embeddings"
 
   try:
     let response = await client.post(apiUrl, $body, headers)
@@ -125,5 +148,54 @@ method getEmbedding*(provider: OpenAIProvider, text: string): Future[seq[float]]
       return embedding
     else:
       raise newException(ValueError, fmt"Embedding API Error: HTTP {response.code} - {responseBody}")
-  finally:
-    client.close()
+  except Exception as e:
+    raise e
+
+# =============================================================================
+# Polymorphic Introspection for OpenAI
+# =============================================================================
+
+method isAlive*(provider: OpenAIProvider): Future[bool] {.async.} =
+  let client = provider.client
+  let headers = @[("Authorization", "Bearer " & provider.apiKey)]
+  try:
+    let response = await client.get(provider.baseUrl & "/models", headers)
+    return response.is2xx
+  except Exception:
+    return false
+
+method getAvailableModels*(provider: OpenAIProvider): Future[seq[
+    string]] {.async.} =
+  let client = provider.client
+  let headers = @[("Authorization", "Bearer " & provider.apiKey)]
+  try:
+    let response = await client.get(provider.baseUrl & "/models", headers)
+    if not response.is2xx: return @[]
+    let respJson = parseJson(response.body)
+    var models: seq[string] = @[]
+    for m in respJson["data"]:
+      models.add(m["id"].getStr())
+    return models
+  except Exception:
+    return @[]
+
+method getMaxContextTokens*(provider: OpenAIProvider): Future[int] {.async.} =
+  # OpenAI models have static context limits mapped by name
+  let m = provider.model
+  if m.contains("gpt-4o") or m.contains("gpt-4-turbo"): return 128000
+  if m.contains("gpt-4"): return 8192
+  if m.contains("gpt-3.5-turbo-16k"): return 16384
+  if m.contains("gpt-3.5-turbo"): return 16384 # 0125 versions
+  return 8192
+
+method supportsVision*(provider: OpenAIProvider): bool =
+  return provider.model.contains("gpt-4o") or provider.model.contains("vision")
+
+method setBaseUrl*(provider: OpenAIProvider, url: string) =
+  provider.baseUrl = url
+
+method setApiKey*(provider: OpenAIProvider, key: string) =
+  provider.apiKey = key
+
+method setModel*(provider: OpenAIProvider, model: string) =
+  provider.model = model

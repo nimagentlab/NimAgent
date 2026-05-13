@@ -24,7 +24,8 @@ type
     maxDepth*: int
     maxFiles*: int
 
-proc validateWorkspacePath*(config: WorkspaceConfig, path: string): tuple[isValid: bool, error: string] =
+proc validateWorkspacePath*(config: WorkspaceConfig, path: string): tuple[
+    isValid: bool, error: string] =
   ## Validates path against workspace safety rules
 
   # Reject absolute paths
@@ -61,7 +62,7 @@ llmTool "List files in the workspace directory. Returns a JSON array of file ent
       let config = WorkspaceConfig(
         root: os.getCurrentDir() / "workspace",
         maxReadBytes: 1024 * 1024,  # 1MB
-        maxWriteBytes: 1024 * 1024,  # 1MB
+        maxWriteBytes: 1024 * 1024, # 1MB
         allowOverwrite: false,
         allowHidden: includeHidden,
         maxDepth: 3,
@@ -98,7 +99,9 @@ llmTool "List files in the workspace directory. Returns a JSON array of file ent
           "name": entryName,
           "type": (if kind == pcDir: "directory" else: "file"),
           "size": (if kind == pcFile: getFileSize(entryPath) else: 0),
-          "modified": (if kind == pcFile: times.format(times.local(getLastModificationTime(entryPath)), "yyyy-MM-dd HH:mm:ss") else: "")
+          "modified": (if kind == pcFile: times.format(times.local(
+              getLastModificationTime(entryPath)),
+              "yyyy-MM-dd HH:mm:ss") else: "")
         }
 
         entries.add(entry)
@@ -111,13 +114,13 @@ llmTool "List files in the workspace directory. Returns a JSON array of file ent
 llmTool "Read a file from the workspace. File must be within the workspace root. Respects maxReadBytes limit. Hidden files rejected by default.":
   proc workspaceRead(
     path: string,
-    maxBytes: int = 1048576  # 1MB default
+    maxBytes: int = 1048576 # 1MB default
   ): Future[string] {.async.} =
     ## Read workspace file with safety constraints
     try:
       let config = WorkspaceConfig(
         root: os.getCurrentDir() / "workspace",
-        maxReadBytes: min(maxBytes, 1024 * 1024),  # Cap at 1MB
+        maxReadBytes: min(maxBytes, 1024 * 1024), # Cap at 1MB
         maxWriteBytes: 1024 * 1024,
         allowOverwrite: false,
         allowHidden: false,
@@ -140,7 +143,8 @@ llmTool "Read a file from the workspace. File must be within the workspace root.
 
       let fileSize = getFileSize(fullPath)
       if fileSize > config.maxReadBytes:
-        return "Error: File too large (" & $fileSize & " bytes). Max: " & $config.maxReadBytes & " bytes."
+        return "Error: File too large (" & $fileSize & " bytes). Max: " &
+            $config.maxReadBytes & " bytes."
 
       let content = readFile(fullPath)
       return content
@@ -167,7 +171,8 @@ llmTool "Write content to a file in the workspace. File must be within the works
 
       # Check content size
       if content.len > config.maxWriteBytes:
-        return "Error: Content too large (" & $content.len & " bytes). Max: " & $config.maxWriteBytes & " bytes."
+        return "Error: Content too large (" & $content.len & " bytes). Max: " &
+            $config.maxWriteBytes & " bytes."
 
       # Ensure workspace exists
       if not dirExists(config.root):

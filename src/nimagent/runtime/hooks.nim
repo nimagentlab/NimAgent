@@ -1,10 +1,8 @@
-## Runtime Hooks for nimagent
-## Extension points for instrumenting the agent cycle
+## nimagent - Runtime Hooks
+## Extension points for instrumenting the agent cycle.
+##
+## NOTE: RuntimeHooks types are defined in agent.nim (to avoid circular refs).
+## This file re-exports them for convenient `import nimagent/runtime/hooks`.
 
-## Note: RuntimeHooks types are defined in agent.nim to avoid
-## circular references. This file is kept for compatibility.
-
-import std/asyncdispatch
-
-## Hooks are defined in agent.nim with the complete Agent type
-## Import agent.nim to use RuntimeHooks
+import ../agent
+export Agent, RuntimeHooks

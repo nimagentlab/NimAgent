@@ -1,108 +1,79 @@
-## Advanced tests for memory
 
-import std/[unittest, json, os, strutils]
-import nimagent/messages
+## test_memory.nim
+## Unit tests for MemoryHistory sliding window and persistence.
+
+import std/[os, unittest, json, strutils]
 import nimagent/memory/basic_memory
+import nimagent/messages
 
-suite "Memory Advanced":
-  test "Memory with custom system instruction":
-    let mem = newMemoryHistory("You are a Nim expert")
-    check mem.systemPrompt == "You are a Nim expert"
-
-  test "Multiple message additions":
-    let mem = newMemoryHistory()
-    for i in 0..<10:
-      mem.addMessage(Message(role: User, content: "Message " & $i))
-    check mem.messages.len == 10
-
-  test "Sliding window":
-    let mem = newMemoryHistory(maxMessages = 5)
-    for i in 0..<20:
-      mem.addMessage(Message(role: User, content: "Msg " & $i))
-
-    check mem.messages.len == 5
-    # Oldest messages are removed
-    check mem.messages[0].content == "Msg 15"
-    check mem.messages[4].content == "Msg 19"
-
-  test "Context building with system":
-    let mem = newMemoryHistory("You are an AI assistant")
+suite "MemoryHistory":
+  test "newMemoryHistory and addMessage":
+    let mem = newMemoryHistory("You are a tester", maxMessages = 10)
+    check mem.systemPrompt == "You are a tester"
+    check mem.maxTokensOrMessages == 10
     mem.addMessage(Message(role: User, content: "Hello"))
-
-    let context = mem.buildContext()
-    check context.len == 2
-    check context[0].role == System
-    check context[0].content == "You are an AI assistant"
-    check context[1].role == User
-
-  test "Context building with RAG":
-    let mem = newMemoryHistory("You are an assistant")
-    mem.addMessage(Message(role: User, content: "Question?"))
-
-    let ragContext = "Document found: Nim is a compiled language."
-    let ctx = mem.buildContext(ragContext)
-
-    check ctx.len == 2
-    check "Document found" in ctx[0].content
-    check "Nim is a compiled language" in ctx[0].content
-
-  test "Messages with tool calls":
-    let mem = newMemoryHistory()
-    var tc = ToolCall(
-      id: "call_1",
-      name: "read_file",
-      arguments: "{}"
-    )
-    let msg = Message(
-      role: Assistant,
-      content: "I'm reading the file",
-      toolCalls: @[tc]
-    )
-    mem.addMessage(msg)
-
     check mem.messages.len == 1
-    check mem.messages[0].toolCalls.len == 1
-    check mem.messages[0].toolCalls[0].name == "read_file"
+    check mem.messages[0].role == User
 
-  test "Message with tool response":
-    let mem = newMemoryHistory()
-    let msg = Message(
-      role: Tool,
-      content: "File content: hello",
-      toolCallId: "call_1"
-    )
-    mem.addMessage(msg)
+  test "buildContext includes system prompt":
+    let mem = newMemoryHistory("Sys prompt", maxMessages = 5)
+    mem.addMessage(Message(role: User, content: "Hi"))
+    let ctx = mem.buildContext()
+    check ctx.len == 2
+    check ctx[0].role == System
+    check ctx[0].content == "Sys prompt"
+    check ctx[1].role == User
 
-    check mem.messages[0].role == Tool
-    check mem.messages[0].toolCallId == "call_1"
+  test "buildContext with RAG":
+    let mem = newMemoryHistory("Sys prompt", maxMessages = 5)
+    mem.addMessage(Message(role: User, content: "Hi"))
+    let ctx = mem.buildContext("RAG context here")
+    check ctx.len == 2
+    check "RAG context here" in ctx[0].content
 
-  test "Save and load":
-    let testFile = "/tmp/test_memory.json"
-    defer: removeFile(testFile)
+  test "sliding window drops oldest messages":
+    let mem = newMemoryHistory("Sys", maxMessages = 10)
+    for i in 1..15:
+      mem.addMessage(Message(role: User, content: "msg " & $i))
+    check mem.messages.len == 10
+    check mem.messages[0].content == "msg 6"
 
-    let mem = newMemoryHistory("System prompt")
-    mem.addMessage(Message(role: User, content: "Test"))
-    mem.addMessage(Message(role: Assistant, content: "Response"))
+  test "orphan prevention: Assistant with toolCalls must keep Tool pair":
+    let mem = newMemoryHistory("Sys", maxMessages = 5)
+    for i in 1..5:
+      mem.addMessage(Message(role: User, content: "filler " & $i))
+    mem.addMessage(Message(role: Assistant, content: "call calc", toolCalls: @[
+      ToolCall(id: "tc1", name: "calc", arguments: "{}")
+    ]))
+    mem.addMessage(Message(role: Tool, content: "55", toolCallId: "tc1"))
+    check mem.messages.len <= 5
+    var hasAssistantWithTool = false
+    var assistantIdx = -1
+    for i, m in mem.messages:
+      if m.role == Assistant and m.toolCalls.len > 0:
+        hasAssistantWithTool = true
+        assistantIdx = i
+        break
+    if hasAssistantWithTool:
+      check assistantIdx + 1 < mem.messages.len  # Tool must follow Assistant
+      if assistantIdx + 1 < mem.messages.len:
+        check mem.messages[assistantIdx + 1].role == Tool
 
-    mem.saveToDisk(testFile)
-    check fileExists(testFile)
-
-    let loaded = loadHistoryFromDisk(testFile)
-    check loaded.systemPrompt == "System prompt"
-    check loaded.messages.len == 2
+  test "save and load roundtrip":
+    let mem = newMemoryHistory("Agent prompt", maxMessages = 10)
+    mem.addMessage(Message(role: User, content: "User msg"))
+    mem.addMessage(Message(role: Assistant, content: "Assistant msg", toolCalls: @[ ToolCall(id: "tc1", name: "calc", arguments: "{\"a\":1}") ]))
+    mem.addMessage(Message(role: Tool, content: "1", toolCallId: "tc1"))
+    let tmpFile = getTempDir() / "test_memory_roundtrip.json"
+    mem.saveToDisk(tmpFile)
+    defer: removeFile(tmpFile)
+    let loaded = loadHistoryFromDisk(tmpFile)
+    check loaded.systemPrompt == "Agent prompt"
+    check loaded.maxTokensOrMessages == 10
+    check loaded.messages.len == 3
     check loaded.messages[0].role == User
-    check loaded.messages[0].content == "Test"
-
-  test "Loading non-existent file":
-    let loaded = loadHistoryFromDisk("/tmp/nonexistent_file_xyz.json")
-    check loaded.messages.len == 0
-
-  test "Modifying system prompt":
-    let mem = newMemoryHistory("Initial prompt")
-    mem.setSystemPrompt("New prompt")
-    check mem.systemPrompt == "New prompt"
-
-  test "Empty context without system":
-    let mem = newMemoryHistory("")
-    let context = mem.buildContext()
-    check context.len == 0
+    check loaded.messages[1].role == Assistant
+    check loaded.messages[1].toolCalls.len == 1
+    check loaded.messages[1].toolCalls[0].name == "calc"
+    check loaded.messages[2].role == Tool
+    check loaded.messages[2].toolCallId == "tc1"

@@ -1,6 +1,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
-import std/[tables, macros]
+import std/[tables, macros, strutils, sequtils]
+import ./permissions
 
 when defined(useChronos):
   type
@@ -14,6 +15,7 @@ type
     name*: string
     description*: string
     schema*: JsonNode ## JSON Schema of expected arguments
+    permissions*: ToolPermissions
     action*: ToolAction
 
   ToolRegistry* = ref object
@@ -47,7 +49,7 @@ proc callTool*(registry: ToolRegistry, name: string, argsStr: string): Future[
   if registry.tools.hasKey(name):
     let tool = registry.tools[name]
     try:
-      let argsJson = parseJson(argsStr)
+      let argsJson = if argsStr.strip().len > 0: parseJson(argsStr) else: newJObject()
       return await tool.action(argsJson)
     except CatchableError as e:
       return "Error executing tool '" & name & "': " & e.msg
@@ -88,14 +90,17 @@ macro llmTool*(description: static[string], procDefNode: untyped): untyped =
       let paramName = identDefs[j]
       let paramNameStr = paramName.strVal
 
-      let typeStr = if paramType.kind ==
-          nnkIdent: paramType.strVal else: "string"
+      let typeStr = if paramType.kind == nnkIdent: paramType.strVal 
+                    elif paramType.kind == nnkBracketExpr: paramType[0].strVal
+                    else: "string"
 
       let jsonType = case typeStr
         of "int": "integer"
         of "float", "float64", "float32": "number"
         of "bool": "boolean"
         of "string": "string"
+        of "seq": "array"
+        of "JsonNode": "object"
         else: "string"
 
       propsStmtList.add(quote do:
@@ -106,33 +111,51 @@ macro llmTool*(description: static[string], procDefNode: untyped): untyped =
       if not hasDefault:
         reqAst.add(newLit(paramNameStr))
 
-      let getMethodIdent = ident(case typeStr
-        of "int": "getInt"
-        of "float", "float64", "float32": "getFloat"
-        of "bool": "getBool"
-        of "string": "getStr"
-        else: "getStr")
+      let getMethodIdent = case typeStr
+        of "int": ident("getInt")
+        of "float", "float64", "float32": ident("getFloat")
+        of "bool": ident("getBool")
+        of "string": ident("getStr")
+        of "seq", "JsonNode": ident("identity") # On passe le JsonNode tel quel ou on gère la seq
+        else: ident("getStr")
 
       if not hasDefault:
-        actionBody.add(quote do:
-          let `paramName` = `argsJsonIdent`[`paramNameStr`].`getMethodIdent`()
-        )
+        if typeStr == "seq":
+          actionBody.add(quote do:
+            let `paramName` = `argsJsonIdent`[`paramNameStr`].items.toSeq.mapIt(it.getStr())
+          )
+        elif typeStr == "JsonNode":
+          actionBody.add(quote do:
+            let `paramName` = `argsJsonIdent`[`paramNameStr`]
+          )
+        else:
+          actionBody.add(quote do:
+            let `paramName` = `argsJsonIdent`[`paramNameStr`].`getMethodIdent`()
+          )
       else:
         let defaultVal = identDefs[^1]
-        actionBody.add(quote do:
-          let `paramName` = if `argsJsonIdent`.hasKey(`paramNameStr`): `argsJsonIdent`[`paramNameStr`].`getMethodIdent`() else: `defaultVal`
-        )
+        if typeStr == "seq":
+          actionBody.add(quote do:
+            let `paramName` = if `argsJsonIdent`.hasKey(`paramNameStr`): `argsJsonIdent`[`paramNameStr`].items.toSeq.mapIt(it.getStr()) else: `defaultVal`
+          )
+        elif typeStr == "JsonNode":
+          actionBody.add(quote do:
+            let `paramName` = if `argsJsonIdent`.hasKey(`paramNameStr`): `argsJsonIdent`[`paramNameStr`] else: `defaultVal`
+          )
+        else:
+          actionBody.add(quote do:
+            let `paramName` = if `argsJsonIdent`.hasKey(`paramNameStr`): `argsJsonIdent`[`paramNameStr`].`getMethodIdent`() else: `defaultVal`
+          )
 
       callNode.add(paramName)
 
   if isAsync:
-    actionBody.add(quote do:
-      return $(await `callNode`)
-    )
+    let awaitCall = newTree(nnkCommand, ident("await"), callNode)
+    let dollarCall = newCall(ident("$"), awaitCall)
+    actionBody.add(newTree(nnkReturnStmt, dollarCall))
   else:
-    actionBody.add(quote do:
-      return $(`callNode`)
-    )
+    let dollarCall = newCall(ident("$"), callNode)
+    actionBody.add(newTree(nnkReturnStmt, dollarCall))
 
   let toolGenName = ident(procNameStr & "Tool")
 
@@ -152,6 +175,7 @@ macro llmTool*(description: static[string], procDefNode: untyped): untyped =
         name: `procNameStr`,
         description: `description`,
         schema: schema,
+        permissions: defaultSafePermissions(),
         action: proc(`argsJsonIdent`: JsonNode): Future[string] {.async, closure.} =
         `actionBody`
       )

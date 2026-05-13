@@ -1,33 +1,33 @@
-## JSON Compatibility Layer - Migration std/json → jsony
+## JSON Compatibility Layer — std/json universal, jsony as optional helper
 ## =============================================================================
 ##
-## This module provides an abstraction layer to facilitate migration
-## from std/json to jsony (6-7× faster).
+## std/json.JsonNode is the single runtime DOM type for the entire framework.
+## jsony is available as an *optional* fast serializer for known Nim types when
+## compiled with -d:useJsony. It does NOT replace JsonNode.
 ##
 ## Usage:
 ##   import nimagent/utils/json_compat
+##   # JsonNode, parseJson, %*, pretty  ← always std/json, always safe
+##   # jsonySerialize, jsonyDeserialize ← only when useJsony is defined
 ##
-## To force jsony: nim c -d:useJsony
-## For std/json: nim c (default, during transition)
-##
+## =============================================================================
+
+import std/json
+export json
 
 when defined(useJsony):
-  ## jsony mode (new, fast)
   import jsony
-  export jsony
 
-  # JsonNode compatibility type
-  type JsonNode* = string
+  # ── Optional jsony helpers for typed (de)serialization ──
+  proc jsonySerialize*[T](v: T): string =
+    ## Fast jsony serializer for structured Nim types.
+    ## Does NOT produce JsonNode — use std/json.%* for DOM building.
+    jsony.toJson(v)
 
-  template parseJson*(s: string): JsonNode = s
-  template toJson*(v: auto): string = jsony.toJson(v)
-  template `%*`*(v: untyped): string = jsony.toJson(v)
-  template pretty*(s: string): string = s
-
-else:
-  ## std/json mode (legacy, during migration)
-  import std/json
-  export json
+  proc jsonyDeserialize*[T](s: string; _: typedesc[T]): T =
+    ## Fast jsony deserializer into a known Nim type.
+    ## For dynamic JSON use std/json.parseJson instead.
+    jsony.fromJson(s, T)
 
 ## =============================================================================
 ## JSON Error Handling
@@ -48,6 +48,6 @@ proc raiseJsonError*(msg: string) {.noreturn.} =
 when isMainModule:
   echo "JSON compat module loaded"
   when defined(useJsony):
-    echo "Mode: JSONY (fast)"
+    echo "Mode: std/json DOM + jsony helpers available"
   else:
-    echo "Mode: std/json (legacy)"
+    echo "Mode: std/json only"

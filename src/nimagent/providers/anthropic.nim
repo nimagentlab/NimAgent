@@ -3,7 +3,7 @@
 import ../utils/async_compat
 import ../utils/json_compat
 import ../utils/http_compat
-import std/[strformat]
+import std/[strformat, strutils]
 import ./base
 import ../messages
 
@@ -12,44 +12,70 @@ type
     apiKey*: string
     model*: string
 
-proc newAnthropicProvider*(apiKey: string, model: string = "claude-3-haiku-20240307"): AnthropicProvider =
+proc newAnthropicProvider*(apiKey: string,
+    model: string = "claude-3-haiku-20240307"): AnthropicProvider =
   AnthropicProvider(apiKey: apiKey, model: model)
 
-method generate*(provider: AnthropicProvider, messages: seq[Message], toolsSchema: JsonNode = nil, forceJson: bool = false): Future[Message] {.async.} =
+method generate*(provider: AnthropicProvider, messages: seq[Message],
+    toolsSchema: JsonNode = nil, forceJson: bool = false): Future[
+    Message] {.async.} =
   let client = newHttpCompatClient(@[
     ("x-api-key", provider.apiKey),
     ("anthropic-version", "2023-06-01"),
     ("content-type", "application/json")
   ])
-  
+
   var apiMessages = newJArray()
   var systemPrompt = ""
-  
+
   for msg in messages:
     if msg.role == System:
       systemPrompt &= msg.content & "\n"
     elif msg.role == User:
-      apiMessages.add(%*{"role": "user", "content": msg.content})
+      if msg.images.len > 0:
+        var contentArr = newJArray()
+        contentArr.add(%*{"type": "text", "text": msg.content})
+        for img in msg.images:
+          var mediaType = "image/jpeg"
+          var base64Data = img
+          if img.startsWith("data:"):
+            let parts = img.split(";")
+            if parts.len >= 2:
+              mediaType = parts[0].replace("data:", "")
+              base64Data = parts[1].replace("base64,", "")
+          contentArr.add(%*{
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": mediaType,
+              "data": base64Data
+            }
+          })
+        apiMessages.add(%*{"role": "user", "content": contentArr})
+      else:
+        apiMessages.add(%*{"role": "user", "content": msg.content})
     elif msg.role == Assistant:
       if msg.toolCalls.len > 0:
         var toolUses = newJArray()
         for tc in msg.toolCalls:
-          toolUses.add(%*{"type": "tool_use", "id": tc.id, "name": tc.name, "input": parseJson(tc.arguments)})
+          toolUses.add(%*{"type": "tool_use", "id": tc.id, "name": tc.name,
+              "input": parseJson(tc.arguments)})
         apiMessages.add(%*{"role": "assistant", "content": toolUses})
       else:
         apiMessages.add(%*{"role": "assistant", "content": msg.content})
     elif msg.role == Tool:
-      apiMessages.add(%*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": msg.toolCallId, "content": msg.content}]})
+      apiMessages.add(%*{"role": "user", "content": [%*{"type": "tool_result",
+          "tool_use_id": msg.toolCallId, "content": msg.content}]})
 
   let body = %*{
     "model": provider.model,
     "max_tokens": 4096,
     "messages": apiMessages
   }
-  
+
   if systemPrompt.len > 0:
     body["system"] = %systemPrompt
-    
+
   # Converting OAI schema to Anthropic format
   if not toolsSchema.isNil and toolsSchema.len > 0:
     var anthropicTools = newJArray()
@@ -62,7 +88,8 @@ method generate*(provider: AnthropicProvider, messages: seq[Message], toolsSchem
     body["tools"] = anthropicTools
 
   try:
-    let response = await client.post("https://api.anthropic.com/v1/messages", $body, newJsonHeaders())
+    let response = await client.post("https://api.anthropic.com/../messages",
+        $body, newJsonHeaders())
     if response.is2xx:
       let jsonResp = parseJson(response.body)
       var outMsg = Message(role: Assistant, content: "")
@@ -77,8 +104,10 @@ method generate*(provider: AnthropicProvider, messages: seq[Message], toolsSchem
             arguments: $blockNode["input"]
           ))
       return outMsg
-    else: raise newException(ValueError, fmt"Anthropic Error: HTTP {response.code} - {response.body}")
+    else: raise newException(ValueError,
+        fmt"Anthropic Error: HTTP {response.code} - {response.body}")
   finally: client.close()
 
-method getEmbedding*(provider: AnthropicProvider, text: string): Future[seq[float]] {.async.} =
+method getEmbedding*(provider: AnthropicProvider, text: string): Future[seq[
+    float]] {.async.} =
   raise newException(ValueError, "Anthropic does not offer a public embedding model. Use OpenAI or LlamaCpp for RAG vectors.")
